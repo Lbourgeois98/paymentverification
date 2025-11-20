@@ -1,12 +1,13 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useState, type DragEvent, type ChangeEvent } from 'react';
 import { Upload, Image } from 'lucide-react';
 import { Button } from './ui/button';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
+import type { AnalysisResult } from '@/types/analysis';
 
 interface UploadZoneProps {
   onAnalysisStart: () => void;
-  onAnalysisComplete: (result: any) => void;
+  onAnalysisComplete: (result: AnalysisResult) => void;
 }
 
 export const UploadZone = ({ onAnalysisStart, onAnalysisComplete }: UploadZoneProps) => {
@@ -15,28 +16,7 @@ export const UploadZone = ({ onAnalysisStart, onAnalysisComplete }: UploadZonePr
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const { toast } = useToast();
 
-  const handleDrag = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === "dragenter" || e.type === "dragover") {
-      setIsDragging(true);
-    } else if (e.type === "dragleave") {
-      setIsDragging(false);
-    }
-  }, []);
-
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
-
-    const files = Array.from(e.dataTransfer.files);
-    if (files.length > 0) {
-      handleFileSelect(files[0]);
-    }
-  }, []);
-
-  const handleFileSelect = (file: File) => {
+  const handleFileSelect = useCallback((file: File) => {
     if (!file.type.startsWith('image/')) {
       toast({
         title: "Invalid File",
@@ -47,7 +27,28 @@ export const UploadZone = ({ onAnalysisStart, onAnalysisComplete }: UploadZonePr
     }
 
     setSelectedFile(file);
-  };
+  }, [toast]);
+
+  const handleDrag = useCallback((e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type === "dragenter" || e.type === "dragover") {
+      setIsDragging(true);
+    } else if (e.type === "dragleave") {
+      setIsDragging(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback((e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      handleFileSelect(files[0]);
+    }
+  }, [handleFileSelect]);
 
   const handleAnalyze = async () => {
     if (!selectedFile) return;
@@ -61,16 +62,18 @@ export const UploadZone = ({ onAnalysisStart, onAnalysisComplete }: UploadZonePr
       reader.onload = async (e) => {
         const base64 = e.target?.result as string;
 
-        const { data, error } = await supabase.functions.invoke('analyze-payment', {
-          body: { 
+        const { data, error } = await supabase.functions.invoke<AnalysisResult>('analyze-payment', {
+          body: {
             image: base64,
-            filename: selectedFile.name 
+            filename: selectedFile.name
           }
         });
 
         if (error) throw error;
 
-        onAnalysisComplete(data);
+        if (data) {
+          onAnalysisComplete(data);
+        }
         toast({
           title: "Analysis Complete",
           description: "Your payment screenshot has been analyzed",
@@ -105,7 +108,7 @@ export const UploadZone = ({ onAnalysisStart, onAnalysisComplete }: UploadZonePr
         <input
           type="file"
           accept="image/*"
-          onChange={(e) => {
+          onChange={(e: ChangeEvent<HTMLInputElement>) => {
             const file = e.target.files?.[0];
             if (file) handleFileSelect(file);
           }}

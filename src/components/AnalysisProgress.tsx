@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Card } from './ui/card';
 
 interface AnalysisProgressProps {
@@ -8,7 +8,7 @@ interface AnalysisProgressProps {
 export const AnalysisProgress = ({ isAnalyzing }: AnalysisProgressProps) => {
   const [currentStep, setCurrentStep] = useState(0);
 
-  const steps = [
+  const steps = useMemo(() => ([
     { label: 'Extracting EXIF metadata', duration: 1500 },
     { label: 'Scanning for editing software', duration: 1800 },
     { label: 'Analyzing compression artifacts', duration: 2000 },
@@ -16,7 +16,7 @@ export const AnalysisProgress = ({ isAnalyzing }: AnalysisProgressProps) => {
     { label: 'Detecting cloned regions', duration: 2500 },
     { label: 'Checking lighting consistency', duration: 2200 },
     { label: 'Finalizing results', duration: 1000 },
-  ];
+  ]), []);
 
   useEffect(() => {
     if (!isAnalyzing) {
@@ -36,7 +36,7 @@ export const AnalysisProgress = ({ isAnalyzing }: AnalysisProgressProps) => {
     };
 
     progressSteps();
-  }, [isAnalyzing]);
+  }, [isAnalyzing, steps]);
 
   if (!isAnalyzing) return null;
 

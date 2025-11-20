@@ -66,32 +66,76 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
     // Convert base64 to binary for analysis
     const base64Data = base64Image.split(',')[1];
     const binaryData = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
-    
+
+    // Identify the format early so heuristics can be tailored per type
+    const format = detectImageFormat(binaryData);
+
+    type EvidenceSeverity = 'warning' | 'critical';
+    const evidenceByCategory = new Map<string, { warning: Set<string>; critical: Set<string> }>();
+
+    const addEvidence = (category: string, signal: string, severity: EvidenceSeverity) => {
+      const entry = evidenceByCategory.get(category) || { warning: new Set<string>(), critical: new Set<string>() };
+      entry[severity].add(signal);
+      evidenceByCategory.set(category, entry);
+    };
+
+    const getCategoryCount = (severity?: EvidenceSeverity) => {
+      let count = 0;
+      for (const entry of evidenceByCategory.values()) {
+        if (!severity && (entry.warning.size > 0 || entry.critical.size > 0)) {
+          count++;
+        } else if (severity === 'warning' && entry.warning.size > 0) {
+          count++;
+        } else if (severity === 'critical' && entry.critical.size > 0) {
+          count++;
+        }
+      }
+      return count;
+    };
+
+    const getEvidenceCount = (severity: EvidenceSeverity) => {
+      let count = 0;
+      for (const entry of evidenceByCategory.values()) {
+        count += entry[severity].size;
+      }
+      return count;
+    };
+
     // PHASE 1: Binary Forensic Analysis
     console.log('Starting binary forensic analysis...');
-    
-    // Check for EXIF data presence
+
+    // Check for EXIF data presence (only suspicious for JPEGs)
     const hasExif = checkExifPresence(binaryData);
-    
-    if (!hasExif) {
+
+    if (format === 'JPEG' && !hasExif) {
       findings.push({
         type: 'warning',
-        message: 'No EXIF data found. This could indicate metadata has been stripped, which is common with edited images.'
+        message: 'No EXIF data found in JPEG. This can indicate metadata stripping from re-saving or editing.'
       });
-      confidence -= 15;
+      confidence -= 10;
       metadataInconsistencies = true;
     }
 
     // Analyze image header for editing software signatures
     const softwareSignatures = detectEditingSoftware(binaryData);
+    const appSignatures = detectAppSignatures(binaryData);
+    const strongMetadataEvidence = softwareSignatures.length + appSignatures.length > 1;
+
     if (softwareSignatures.length > 0) {
       editingSoftware = softwareSignatures.join(', ');
-      editingDetected = true;
+      const severity: 'warning' | 'critical' = strongMetadataEvidence ? 'critical' : 'warning';
       findings.push({
-        type: 'critical',
-        message: `Editing software detected: ${editingSoftware}. Image has been processed through editing applications.`
+        type: severity,
+        message: `Editing software detected in metadata: ${editingSoftware}.`
       });
-      confidence -= 40;
+      if (severity === 'critical') {
+        editingDetected = true;
+        confidence -= 30;
+        addEvidence('metadata', 'editing-software', 'critical');
+      } else {
+        confidence -= 8;
+        addEvidence('metadata', 'editing-software', 'warning');
+      }
     }
 
     // Check for multiple save signatures (re-compression)
@@ -102,11 +146,11 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
         type: 'warning',
         message: 'Multiple compression signatures detected. Image appears to have been saved multiple times, suggesting possible editing.'
       });
-      confidence -= 20;
+      confidence -= 15;
+      addEvidence('compression', 'recompression', 'warning');
     }
 
     // Analyze PNG/JPEG specific markers
-    const format = detectImageFormat(binaryData);
     if (format === 'PNG') {
       const pngAnalysis = analyzePNG(binaryData);
       if (pngAnalysis.suspicious) {
@@ -115,6 +159,7 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
           message: 'PNG metadata suggests possible screenshot conversion or editing.'
         });
         confidence -= 10;
+        addEvidence('format', 'png-metadata', 'warning');
       }
     } else if (format === 'JPEG') {
       const jpegAnalysis = analyzeJPEG(binaryData);
@@ -125,18 +170,25 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
           message: 'JPEG quality levels are inconsistent across the image, indicating selective editing or manipulation.'
         });
         confidence -= 25;
+        addEvidence('compression', 'quality', 'critical');
       }
     }
 
     // Check for common editing app signatures in metadata
-    const appSignatures = detectAppSignatures(binaryData);
     if (appSignatures.length > 0) {
+      const severity: 'warning' | 'critical' = strongMetadataEvidence ? 'critical' : 'warning';
       findings.push({
-        type: 'critical',
-        message: `Detected traces of editing apps: ${appSignatures.join(', ')}. Image has been modified.`
+        type: severity,
+        message: `Detected traces of editing apps in metadata: ${appSignatures.join(', ')}.`
       });
-      editingDetected = true;
-      confidence -= 30;
+      if (severity === 'critical') {
+        editingDetected = true;
+        confidence -= 25;
+        addEvidence('metadata', 'app-signature', 'critical');
+      } else {
+        confidence -= 6;
+        addEvidence('metadata', 'app-signature', 'warning');
+      }
     }
 
     // PHASE 2: AI-Powered Visual Analysis
@@ -152,6 +204,7 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
         });
         editingDetected = true;
         confidence -= 35;
+        addEvidence('ai', 'cloned-regions', 'critical');
       }
 
       if (aiAnalysis.lightingInconsistencies) {
@@ -161,6 +214,7 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
         });
         editingDetected = true;
         confidence -= 30;
+        addEvidence('ai', 'lighting-inconsistencies', 'critical');
       }
 
       if (aiAnalysis.pixelManipulation) {
@@ -170,6 +224,7 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
         });
         editingDetected = true;
         confidence -= 40;
+        addEvidence('ai', 'pixel-manipulation', 'critical');
       }
 
       if (aiAnalysis.fontInconsistencies) {
@@ -178,6 +233,7 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
           message: `Font inconsistencies detected: ${aiAnalysis.fontInconsistencies}. Text rendering appears unnatural.`
         });
         confidence -= 15;
+        addEvidence('ai', 'font-inconsistencies', 'warning');
       }
 
       if (aiAnalysis.colorAnomalies) {
@@ -186,6 +242,7 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
           message: `Color anomalies detected: ${aiAnalysis.colorAnomalies}. Color distribution is inconsistent with authentic screenshots.`
         });
         confidence -= 10;
+        addEvidence('ai', 'color-anomalies', 'warning');
       }
 
       if (aiAnalysis.artificialElements) {
@@ -197,10 +254,54 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
       }
     }
 
-    // Final confidence adjustment
-    confidence = Math.max(0, Math.min(100, confidence));
+    // Evaluate evidence using categories and severities to require corroboration
+    // across independent signals. Metadata-only warnings should not mark images
+    // as modified without support from other categories.
+    const totalCriticalEvidence = getEvidenceCount('critical');
+    const totalWarningEvidence = getEvidenceCount('warning');
+    const categoriesWithEvidence = getCategoryCount();
+    const categoriesWithCritical = getCategoryCount('critical');
+    const metadataCategoryPresent = evidenceByCategory.has('metadata');
+    const nonMetadataCategoriesWithEvidence = metadataCategoryPresent
+      ? Math.max(0, categoriesWithEvidence - 1)
+      : categoriesWithEvidence;
+    const aiCriticalPresent = (evidenceByCategory.get('ai')?.critical.size ?? 0) > 0;
 
-    const authentic = confidence >= 70 && !editingDetected;
+    const criticalSupported =
+      aiCriticalPresent ||
+      (totalCriticalEvidence >= 2 && categoriesWithEvidence >= 2) ||
+      (totalCriticalEvidence >= 1 && nonMetadataCategoriesWithEvidence >= 1 &&
+        (totalWarningEvidence >= 1 || categoriesWithCritical >= 2));
+
+    const corroboratedWarnings =
+      totalWarningEvidence >= 3 &&
+      categoriesWithEvidence >= 2 &&
+      nonMetadataCategoriesWithEvidence >= 1;
+
+    const editingLikely = criticalSupported || corroboratedWarnings;
+    const authenticityThreshold = editingLikely ? 70 : 50;
+
+    // Final confidence adjustment with guardrails to avoid false negatives when
+    // only warning-level evidence exists. Cap the total penalty applied from
+    // warnings so a clean screenshot with metadata quirks is not marked
+    // inauthentic unless corroborating signals exist.
+    confidence = Math.max(0, Math.min(100, confidence));
+    const warningOnly = !aiCriticalPresent && totalCriticalEvidence === 0;
+    if (!editingLikely && warningOnly) {
+      const maxWarningPenalty = 35;
+      const appliedPenalty = 100 - confidence;
+      if (appliedPenalty > maxWarningPenalty) {
+        confidence = 100 - maxWarningPenalty;
+      }
+    }
+
+    // Re-evaluate authenticity after capping warning penalties to ensure
+    // non-correlated warnings do not overpower the decision.
+    const authentic = !editingLikely && confidence >= authenticityThreshold;
+
+    // Align metadata flag with the final decision so warnings alone do not mark
+    // the image as edited.
+    editingDetected = editingLikely;
 
     if (authentic && findings.length === 0) {
       findings.push({
@@ -267,52 +368,96 @@ Return your analysis in this EXACT JSON format (no markdown, no code blocks, jus
 
 If a category shows no issues, set it to null. Be specific about locations and what you observe. Only flag issues you're confident about.`;
 
-    const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${LOVABLE_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'google/gemini-2.5-flash',
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: prompt },
-              { type: 'image_url', image_url: { url: base64Image } }
-            ]
-          }
-        ],
-        temperature: 0.3,
-        max_tokens: 1000
-      }),
-    });
+    // Use multiple vision-capable models to reduce single-model bias.
+    const configuredModels = Deno.env.get('AI_MODELS')?.split(',').map((m) => m.trim()).filter(Boolean);
+    const models = configuredModels && configuredModels.length > 0
+      ? configuredModels
+      : ['openai/gpt-4o-mini', 'anthropic/claude-3.5-sonnet-20240620'];
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('AI API error:', response.status, errorText);
+    const modelAnalyses: Record<string, string | null>[] = [];
+
+    for (const model of models) {
+      const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${LOVABLE_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: prompt },
+                { type: 'image_url', image_url: { url: base64Image } }
+              ]
+            }
+          ],
+          temperature: 0.3,
+          max_tokens: 1000
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`AI API error for ${model}:`, response.status, errorText);
+        continue;
+      }
+
+      const data = await response.json();
+      const content = data.choices?.[0]?.message?.content;
+
+      if (!content) {
+        console.error(`No content in AI response for ${model}`);
+        continue;
+      }
+
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          const analysis = JSON.parse(jsonMatch[0]);
+          modelAnalyses.push(analysis);
+          console.log(`AI analysis result for ${model}:`, analysis);
+        } catch (parseError) {
+          console.error(`Could not parse AI response as JSON for ${model}:`, content, parseError);
+        }
+      } else {
+        console.error(`Could not parse AI response as JSON for ${model}:`, content);
+      }
+    }
+
+    if (modelAnalyses.length === 0) {
       return null;
     }
 
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content;
-    
-    if (!content) {
-      console.error('No content in AI response');
-      return null;
+    const keys: Array<keyof typeof modelAnalyses[number]> = [
+      'clonedRegions',
+      'lightingInconsistencies',
+      'pixelManipulation',
+      'fontInconsistencies',
+      'colorAnomalies',
+      'artificialElements'
+    ];
+
+    const merged: Record<string, string | null> = {};
+
+    for (const key of keys) {
+      const findings = modelAnalyses
+        .map((analysis) => analysis[key] as string | null)
+        .filter((value): value is string => !!value && value.trim().length > 0);
+
+      const uniqueFindings = Array.from(new Set(findings));
+
+      // Require corroboration from at least two models to avoid single-model false positives.
+      if (uniqueFindings.length >= 2 || findings.length >= 2) {
+        merged[key] = findings.join(' | ');
+      } else {
+        merged[key] = null;
+      }
     }
 
-    // Parse the JSON response
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const analysis = JSON.parse(jsonMatch[0]);
-      console.log('AI analysis result:', analysis);
-      return analysis;
-    }
-
-    console.error('Could not parse AI response as JSON:', content);
-    return null;
+    return merged;
   } catch (error) {
     console.error('AI analysis error:', error);
     return null;
@@ -333,23 +478,81 @@ function checkExifPresence(data: Uint8Array): boolean {
   return false;
 }
 
+function extractMetadataStrings(data: Uint8Array, maxLength = 8192): string[] {
+  // Collect readable ASCII sequences from the header/metadata region only
+  const strings: string[] = [];
+  const limit = Math.min(data.length, maxLength);
+  let current: number[] = [];
+
+  for (let i = 0; i < limit; i++) {
+    const byte = data[i];
+    if (byte >= 32 && byte <= 126) {
+      current.push(byte);
+    } else {
+      if (current.length >= 4) {
+        strings.push(String.fromCharCode(...current).trim());
+      }
+      current = [];
+    }
+  }
+
+  if (current.length >= 4) {
+    strings.push(String.fromCharCode(...current).trim());
+  }
+
+  return strings;
+}
+
+function extractHeaderTokens(data: Uint8Array, maxLength = 8192): string[] {
+  return extractMetadataStrings(data, maxLength)
+    .map((segment) => segment.replace(/\s+/g, ' ').toLowerCase())
+    .filter((segment) => segment.length > 0);
+}
+
+function escapeRegExp(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function headerContainsPattern(tokens: string[], pattern: string): boolean {
+  const normalizedPattern = pattern.toLowerCase();
+  const boundaryRegex = new RegExp(`\\b${escapeRegExp(normalizedPattern)}\\b`, 'i');
+
+  // Check each token for a whole-word match
+  if (tokens.some((token) => boundaryRegex.test(token))) {
+    return true;
+  }
+
+  // Allow multi-word patterns to span adjacent tokens
+  if (normalizedPattern.includes(' ')) {
+    const joined = tokens.join(' ');
+    return boundaryRegex.test(joined);
+  }
+
+  return false;
+}
+
 function detectEditingSoftware(data: Uint8Array): string[] {
   const software: string[] = [];
-  const dataString = new TextDecoder().decode(data);
-  
+  const headerTokens = extractHeaderTokens(data);
+
+  // Only evaluate metadata-like tokens to avoid random binary matches
+  const metadataTokens = headerTokens.filter((token) =>
+    /(software|application|producer|creator|generator|rendered|modified)/i.test(token)
+  );
+
   const signatures = [
-    { name: 'Photoshop', patterns: ['Adobe Photoshop', 'photoshop', 'PHOSHOP'] },
-    { name: 'GIMP', patterns: ['GIMP', 'gimp'] },
-    { name: 'Canva', patterns: ['Canva', 'canva'] },
-    { name: 'Pixlr', patterns: ['Pixlr', 'pixlr'] },
-    { name: 'Paint.NET', patterns: ['Paint.NET', 'paint.net'] },
-    { name: 'Affinity', patterns: ['Affinity Photo', 'Affinity'] },
-    { name: 'Sketch', patterns: ['Sketch', 'sketch'] }
+    { name: 'Photoshop', patterns: ['adobe photoshop', 'photoshop', 'phoshop'] },
+    { name: 'GIMP', patterns: ['gimp'] },
+    { name: 'Canva', patterns: ['canva'] },
+    { name: 'Pixlr', patterns: ['pixlr'] },
+    { name: 'Paint.NET', patterns: ['paint.net'] },
+    { name: 'Affinity', patterns: ['affinity photo', 'affinity'] },
+    { name: 'Sketch', patterns: ['sketch'] }
   ];
 
   for (const sig of signatures) {
     for (const pattern of sig.patterns) {
-      if (dataString.includes(pattern)) {
+      if (headerContainsPattern(metadataTokens, pattern)) {
         software.push(sig.name);
         break;
       }
@@ -360,14 +563,16 @@ function detectEditingSoftware(data: Uint8Array): string[] {
 }
 
 function detectRecompression(data: Uint8Array): boolean {
-  // Look for multiple JFIF or JPEG markers
+  // Look for multiple JFIF or JPEG markers. Two markers can appear legitimately
+  // when a file embeds a thumbnail preview, so require at least three distinct
+  // start markers before flagging to reduce false positives on native captures.
   let jpegMarkerCount = 0;
   for (let i = 0; i < data.length - 1; i++) {
     if (data[i] === 0xFF && data[i + 1] === 0xD8) {
       jpegMarkerCount++;
     }
   }
-  return jpegMarkerCount > 1;
+  return jpegMarkerCount > 2;
 }
 
 function detectImageFormat(data: Uint8Array): string {
@@ -383,24 +588,45 @@ function detectImageFormat(data: Uint8Array): string {
 }
 
 function analyzePNG(data: Uint8Array): { suspicious: boolean } {
-  const dataString = new TextDecoder().decode(data);
-  // Check for software chunks or unusual metadata
-  const hasSoftwareChunk = dataString.includes('Software') || dataString.includes('tEXt');
-  return { suspicious: hasSoftwareChunk };
+  // Focus on text chunks near the header to avoid parsing entire binary payload
+  const tokens = extractHeaderTokens(data, 16384);
+  const metadataTokens = tokens.filter((token) => /(software|application|creator|producer)/i.test(token));
+
+  const benignDeviceTokens = tokens.some((token) => /(iphone|ios|ipad|apple|screen capture|screenshot)/i.test(token));
+  const editingHits = metadataTokens.some((token) => /(photoshop|gimp|canva|snapseed|instagram|picsart|lightroom|facetune)/i.test(token));
+
+  // Treat PNGs that only contain device/screenshot markers as normal. Flag only
+  // when explicit editing software appears.
+  return { suspicious: editingHits && !benignDeviceTokens };
 }
 
 function analyzeJPEG(data: Uint8Array): { qualityInconsistent: boolean } {
-  // Simplified quality analysis - in real implementation would analyze DCT coefficients
-  // Check for multiple quality settings in comments
-  const dataString = new TextDecoder().decode(data);
-  const qualityMentions = (dataString.match(/quality/gi) || []).length;
-  return { qualityInconsistent: qualityMentions > 2 };
+  // Extract metadata-like tokens from the header region to look for explicit
+  // quality tags instead of scanning arbitrary binary data, which can contain
+  // random "quality" strings and cause false positives.
+  const headerTokens = extractHeaderTokens(data, 16384);
+
+  // Capture numerical quality values such as "Quality=92" or "quality 85".
+  const qualityValues = headerTokens
+    .map((token) => {
+      const match = token.match(/\bquality[:=]?\s*(\d{1,3})/i);
+      return match ? parseInt(match[1], 10) : null;
+    })
+    .filter((value): value is number => value !== null);
+
+  // Flag only when multiple distinct quality levels are present, suggesting
+  // the image was saved more than once with different compression settings.
+  const distinctQualityValues = new Set(qualityValues);
+  return { qualityInconsistent: distinctQualityValues.size > 1 && qualityValues.length > 1 };
 }
 
 function detectAppSignatures(data: Uint8Array): string[] {
   const apps: string[] = [];
-  const dataString = new TextDecoder().decode(data);
-  
+  const headerTokens = extractHeaderTokens(data);
+  const metadataTokens = headerTokens.filter((token) =>
+    /(software|application|producer|creator|generator|rendered|modified|app)/i.test(token)
+  );
+
   const appSignatures = [
     { name: 'Snapseed', pattern: 'snapseed' },
     { name: 'Instagram', pattern: 'instagram' },
@@ -410,7 +636,7 @@ function detectAppSignatures(data: Uint8Array): string[] {
   ];
 
   for (const app of appSignatures) {
-    if (dataString.toLowerCase().includes(app.pattern)) {
+    if (headerContainsPattern(metadataTokens, app.pattern)) {
       apps.push(app.name);
     }
   }
