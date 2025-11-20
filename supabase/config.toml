@@ -1,0 +1,4 @@
+project_id = "jgpplstpzooqxodcqfrm"
+
+[functions.analyze-payment]
+verify_jwt = false
