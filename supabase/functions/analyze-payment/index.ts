@@ -354,52 +354,96 @@ Return your analysis in this EXACT JSON format (no markdown, no code blocks, jus
 
 If a category shows no issues, set it to null. Be specific about locations and what you observe. Only flag issues you're confident about.`;
 
-    const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${LOVABLE_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'google/gemini-2.5-flash',
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: prompt },
-              { type: 'image_url', image_url: { url: base64Image } }
-            ]
-          }
-        ],
-        temperature: 0.3,
-        max_tokens: 1000
-      }),
-    });
+    // Use multiple vision-capable models to reduce single-model bias.
+    const configuredModels = Deno.env.get('AI_MODELS')?.split(',').map((m) => m.trim()).filter(Boolean);
+    const models = configuredModels && configuredModels.length > 0
+      ? configuredModels
+      : ['openai/gpt-4o-mini', 'anthropic/claude-3.5-sonnet-20240620'];
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('AI API error:', response.status, errorText);
+    const modelAnalyses: Record<string, string | null>[] = [];
+
+    for (const model of models) {
+      const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${LOVABLE_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: prompt },
+                { type: 'image_url', image_url: { url: base64Image } }
+              ]
+            }
+          ],
+          temperature: 0.3,
+          max_tokens: 1000
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`AI API error for ${model}:`, response.status, errorText);
+        continue;
+      }
+
+      const data = await response.json();
+      const content = data.choices?.[0]?.message?.content;
+
+      if (!content) {
+        console.error(`No content in AI response for ${model}`);
+        continue;
+      }
+
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          const analysis = JSON.parse(jsonMatch[0]);
+          modelAnalyses.push(analysis);
+          console.log(`AI analysis result for ${model}:`, analysis);
+        } catch (parseError) {
+          console.error(`Could not parse AI response as JSON for ${model}:`, content, parseError);
+        }
+      } else {
+        console.error(`Could not parse AI response as JSON for ${model}:`, content);
+      }
+    }
+
+    if (modelAnalyses.length === 0) {
       return null;
     }
 
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content;
-    
-    if (!content) {
-      console.error('No content in AI response');
-      return null;
+    const keys: Array<keyof typeof modelAnalyses[number]> = [
+      'clonedRegions',
+      'lightingInconsistencies',
+      'pixelManipulation',
+      'fontInconsistencies',
+      'colorAnomalies',
+      'artificialElements'
+    ];
+
+    const merged: Record<string, string | null> = {};
+
+    for (const key of keys) {
+      const findings = modelAnalyses
+        .map((analysis) => analysis[key] as string | null)
+        .filter((value): value is string => !!value && value.trim().length > 0);
+
+      const uniqueFindings = Array.from(new Set(findings));
+
+      // Require corroboration from at least two models to avoid single-model false positives.
+      if (uniqueFindings.length >= 2 || findings.length >= 2) {
+        merged[key] = findings.join(' | ');
+      } else {
+        merged[key] = null;
+      }
     }
 
-    // Parse the JSON response
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const analysis = JSON.parse(jsonMatch[0]);
-      console.log('AI analysis result:', analysis);
-      return analysis;
-    }
-
-    console.error('Could not parse AI response as JSON:', content);
-    return null;
+    return merged;
   } catch (error) {
     console.error('AI analysis error:', error);
     return null;
