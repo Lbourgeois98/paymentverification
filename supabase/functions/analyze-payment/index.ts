@@ -73,10 +73,26 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
     type EvidenceSeverity = 'warning' | 'critical';
     const evidenceByCategory = new Map<string, { warning: Set<string>; critical: Set<string> }>();
 
+    // Track cumulative risk as signals are added so the final decision can
+    // combine cross-category corroboration with weighted severity rather than
+    // relying on a single heuristic.
+    let riskScore = 0;
+
+    const severityWeights: Record<string, { warning: number; critical: number }> = {
+      metadata: { warning: 6, critical: 14 },
+      compression: { warning: 10, critical: 18 },
+      format: { warning: 8, critical: 16 },
+      ai: { warning: 12, critical: 25 },
+      default: { warning: 6, critical: 14 }
+    };
+
     const addEvidence = (category: string, signal: string, severity: EvidenceSeverity) => {
       const entry = evidenceByCategory.get(category) || { warning: new Set<string>(), critical: new Set<string>() };
       entry[severity].add(signal);
       evidenceByCategory.set(category, entry);
+
+      const categoryWeights = severityWeights[category] ?? severityWeights.default;
+      riskScore += categoryWeights[severity];
     };
 
     const getCategoryCount = (severity?: EvidenceSeverity) => {
@@ -267,19 +283,22 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
       : categoriesWithEvidence;
     const aiCriticalPresent = (evidenceByCategory.get('ai')?.critical.size ?? 0) > 0;
 
+    const multiCategorySupport = categoriesWithEvidence >= 2 && nonMetadataCategoriesWithEvidence >= 1;
+    const multiCriticalCategories = categoriesWithCritical >= 2 && nonMetadataCategoriesWithEvidence >= 1;
+    const aiRequiresSupport = aiCriticalPresent && (categoriesWithEvidence >= 2 || totalWarningEvidence >= 2);
     const criticalSupported =
-      aiCriticalPresent ||
-      (totalCriticalEvidence >= 2 && categoriesWithEvidence >= 2) ||
-      (totalCriticalEvidence >= 1 && nonMetadataCategoriesWithEvidence >= 1 &&
-        (totalWarningEvidence >= 1 || categoriesWithCritical >= 2));
+      multiCriticalCategories ||
+      (totalCriticalEvidence >= 2 && multiCategorySupport) ||
+      aiRequiresSupport;
 
-    const corroboratedWarnings =
-      totalWarningEvidence >= 3 &&
-      categoriesWithEvidence >= 2 &&
-      nonMetadataCategoriesWithEvidence >= 1;
+    const strongWarnings =
+      totalWarningEvidence >= 4 &&
+      multiCategorySupport &&
+      riskScore >= 45;
 
-    const editingLikely = criticalSupported || corroboratedWarnings;
-    const authenticityThreshold = editingLikely ? 70 : 50;
+    const riskAdjustedCritical = criticalSupported && riskScore >= 30;
+    const editingLikely = riskAdjustedCritical || strongWarnings;
+    const authenticityThreshold = editingLikely ? 70 : 55;
 
     // Final confidence adjustment with guardrails to avoid false negatives when
     // only warning-level evidence exists. Cap the total penalty applied from
