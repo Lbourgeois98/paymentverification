@@ -21,6 +21,21 @@ interface AnalysisResult {
   };
 }
 
+type AIFindingKey =
+  | 'clonedRegions'
+  | 'lightingInconsistencies'
+  | 'pixelManipulation'
+  | 'fontInconsistencies'
+  | 'colorAnomalies'
+  | 'artificialElements';
+
+interface AggregatedAIFinding {
+  description: string;
+  models: string[];
+}
+
+type AIVisualAnalysis = Partial<Record<AIFindingKey, AggregatedAIFinding>>;
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -61,6 +76,7 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
   let editingDetected = false;
   let compressionAnomalies = false;
   let metadataInconsistencies = false;
+  let jpegQualityInconsistent = false;
 
   try {
     // Convert base64 to binary for analysis
@@ -181,6 +197,7 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
       const jpegAnalysis = analyzeJPEG(binaryData);
       if (jpegAnalysis.qualityInconsistent) {
         compressionAnomalies = true;
+        jpegQualityInconsistent = true;
         findings.push({
           type: 'critical',
           message: 'JPEG quality levels are inconsistent across the image, indicating selective editing or manipulation.'
@@ -188,6 +205,15 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
         confidence -= 25;
         addEvidence('compression', 'quality', 'critical');
       }
+    }
+
+    if (format === 'JPEG' && recompressionDetected && jpegQualityInconsistent) {
+      findings.push({
+        type: 'critical',
+        message: 'Multiple JPEG saves combined with shifting quality levels strongly suggest composite editing.'
+      });
+      confidence -= 18;
+      addEvidence('compression', 'stacked-compression-signals', 'critical');
     }
 
     // Check for common editing app signatures in metadata
@@ -210,63 +236,59 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
     // PHASE 2: AI-Powered Visual Analysis
     console.log('Starting AI-powered visual analysis...');
     const aiAnalysis = await performAIVisualAnalysis(base64Image);
-    
+
     if (aiAnalysis) {
-      // Process AI findings
-      if (aiAnalysis.clonedRegions) {
-        findings.push({
-          type: 'critical',
-          message: `AI detected cloned/copied regions: ${aiAnalysis.clonedRegions}. This indicates copy-paste manipulation.`
-        });
-        editingDetected = true;
-        confidence -= 35;
-        addEvidence('ai', 'cloned-regions', 'critical');
-      }
+      const baseSeverity: Record<AIFindingKey, 'warning' | 'critical'> = {
+        clonedRegions: 'critical',
+        lightingInconsistencies: 'critical',
+        pixelManipulation: 'critical',
+        fontInconsistencies: 'warning',
+        colorAnomalies: 'warning',
+        artificialElements: 'warning'
+      };
 
-      if (aiAnalysis.lightingInconsistencies) {
-        findings.push({
-          type: 'critical',
-          message: `Lighting inconsistencies detected: ${aiAnalysis.lightingInconsistencies}. Different parts of the image have inconsistent illumination.`
-        });
-        editingDetected = true;
-        confidence -= 30;
-        addEvidence('ai', 'lighting-inconsistencies', 'critical');
-      }
+      const penaltyMap: Record<AIFindingKey, { warning: number; critical: number }> = {
+        clonedRegions: { warning: 18, critical: 35 },
+        lightingInconsistencies: { warning: 15, critical: 30 },
+        pixelManipulation: { warning: 20, critical: 40 },
+        fontInconsistencies: { warning: 12, critical: 18 },
+        colorAnomalies: { warning: 10, critical: 16 },
+        artificialElements: { warning: 6, critical: 12 }
+      };
 
-      if (aiAnalysis.pixelManipulation) {
-        findings.push({
-          type: 'critical',
-          message: `Pixel-level manipulation detected: ${aiAnalysis.pixelManipulation}. Text or numbers appear to have been altered.`
-        });
-        editingDetected = true;
-        confidence -= 40;
-        addEvidence('ai', 'pixel-manipulation', 'critical');
-      }
+      for (const [key, detail] of Object.entries(aiAnalysis) as Array<[
+        AIFindingKey,
+        AggregatedAIFinding
+      ]>) {
+        const supportedModels = detail.models.length;
+        const base = baseSeverity[key] ?? 'warning';
+        const severity: 'warning' | 'critical' = supportedModels >= 2 ? base : 'warning';
+        const penalties = penaltyMap[key];
+        const penalty = severity === 'critical' ? penalties.critical : penalties.warning;
+        const supportNote = detail.models.length > 0 ? ` (models: ${detail.models.join(', ')})` : '';
 
-      if (aiAnalysis.fontInconsistencies) {
-        findings.push({
-          type: 'warning',
-          message: `Font inconsistencies detected: ${aiAnalysis.fontInconsistencies}. Text rendering appears unnatural.`
-        });
-        confidence -= 15;
-        addEvidence('ai', 'font-inconsistencies', 'warning');
-      }
+        const messages: Record<AIFindingKey, string> = {
+          clonedRegions: `AI detected cloned/copied regions: ${detail.description}.${supportNote} This indicates copy-paste manipulation.`,
+          lightingInconsistencies: `Lighting inconsistencies detected: ${detail.description}.${supportNote} Different parts of the image have inconsistent illumination.`,
+          pixelManipulation: `Pixel-level manipulation detected: ${detail.description}.${supportNote} Text or numbers appear to have been altered.`,
+          fontInconsistencies: `Font inconsistencies detected: ${detail.description}.${supportNote} Text rendering appears unnatural.`,
+          colorAnomalies: `Color anomalies detected: ${detail.description}.${supportNote} Color distribution is inconsistent with authentic screenshots.`,
+          artificialElements: `Possible artificial elements: ${detail.description}.${supportNote}`
+        };
 
-      if (aiAnalysis.colorAnomalies) {
         findings.push({
-          type: 'warning',
-          message: `Color anomalies detected: ${aiAnalysis.colorAnomalies}. Color distribution is inconsistent with authentic screenshots.`
+          type: severity === 'critical' && base === 'critical' ? 'critical' : 'warning',
+          message: messages[key]
         });
-        confidence -= 10;
-        addEvidence('ai', 'color-anomalies', 'warning');
-      }
 
-      if (aiAnalysis.artificialElements) {
-        findings.push({
-          type: 'info',
-          message: `Possible artificial elements: ${aiAnalysis.artificialElements}`
-        });
-        confidence -= 5;
+        confidence -= penalty;
+
+        if (base === 'critical' && severity === 'critical') {
+          editingDetected = true;
+          addEvidence('ai', key, 'critical');
+        } else {
+          addEvidence('ai', key, 'warning');
+        }
       }
     }
 
@@ -285,20 +307,22 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
 
     const multiCategorySupport = categoriesWithEvidence >= 2 && nonMetadataCategoriesWithEvidence >= 1;
     const multiCriticalCategories = categoriesWithCritical >= 2 && nonMetadataCategoriesWithEvidence >= 1;
-    const aiRequiresSupport = aiCriticalPresent && (categoriesWithEvidence >= 2 || totalWarningEvidence >= 2);
+    const aiRequiresSupport = aiCriticalPresent && (categoriesWithEvidence >= 2 || totalWarningEvidence >= 1);
     const criticalSupported =
       multiCriticalCategories ||
       (totalCriticalEvidence >= 2 && multiCategorySupport) ||
-      aiRequiresSupport;
+      (aiCriticalPresent && aiRequiresSupport) ||
+      (totalCriticalEvidence >= 1 && totalWarningEvidence >= 2 && multiCategorySupport);
 
-    const strongWarnings =
-      totalWarningEvidence >= 4 &&
+    const warningCluster =
+      totalWarningEvidence >= 3 &&
       multiCategorySupport &&
-      riskScore >= 45;
+      riskScore >= 35 &&
+      nonMetadataCategoriesWithEvidence >= 1;
 
     const riskAdjustedCritical = criticalSupported && riskScore >= 30;
-    const editingLikely = riskAdjustedCritical || strongWarnings;
-    const authenticityThreshold = editingLikely ? 70 : 55;
+    const editingLikely = riskAdjustedCritical || (warningCluster && riskScore >= 50);
+    const authenticityThreshold = editingLikely ? 72 : 60;
 
     // Final confidence adjustment with guardrails to avoid false negatives when
     // only warning-level evidence exists. Cap the total penalty applied from
@@ -358,7 +382,7 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
   }
 }
 
-async function performAIVisualAnalysis(base64Image: string) {
+async function performAIVisualAnalysis(base64Image: string): Promise<AIVisualAnalysis | null> {
   try {
     const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY');
     if (!LOVABLE_API_KEY) {
@@ -393,7 +417,7 @@ If a category shows no issues, set it to null. Be specific about locations and w
       ? configuredModels
       : ['openai/gpt-4o-mini', 'anthropic/claude-3.5-sonnet-20240620'];
 
-    const modelAnalyses: Record<string, string | null>[] = [];
+    const modelAnalyses: Array<{ model: string; analysis: Record<string, string | null> }> = [];
 
     for (const model of models) {
       const response = await fetch('https://ai.gateway.lovable.dev/v1/chat/completions', {
@@ -436,7 +460,7 @@ If a category shows no issues, set it to null. Be specific about locations and w
       if (jsonMatch) {
         try {
           const analysis = JSON.parse(jsonMatch[0]);
-          modelAnalyses.push(analysis);
+          modelAnalyses.push({ model, analysis });
           console.log(`AI analysis result for ${model}:`, analysis);
         } catch (parseError) {
           console.error(`Could not parse AI response as JSON for ${model}:`, content, parseError);
@@ -450,7 +474,7 @@ If a category shows no issues, set it to null. Be specific about locations and w
       return null;
     }
 
-    const keys: Array<keyof typeof modelAnalyses[number]> = [
+    const keys: AIFindingKey[] = [
       'clonedRegions',
       'lightingInconsistencies',
       'pixelManipulation',
@@ -459,24 +483,40 @@ If a category shows no issues, set it to null. Be specific about locations and w
       'artificialElements'
     ];
 
-    const merged: Record<string, string | null> = {};
+    const aggregations: Record<AIFindingKey, { descriptions: Set<string>; models: Set<string> }> = {
+      clonedRegions: { descriptions: new Set(), models: new Set() },
+      lightingInconsistencies: { descriptions: new Set(), models: new Set() },
+      pixelManipulation: { descriptions: new Set(), models: new Set() },
+      fontInconsistencies: { descriptions: new Set(), models: new Set() },
+      colorAnomalies: { descriptions: new Set(), models: new Set() },
+      artificialElements: { descriptions: new Set(), models: new Set() }
+    };
 
-    for (const key of keys) {
-      const findings = modelAnalyses
-        .map((analysis) => analysis[key] as string | null)
-        .filter((value): value is string => !!value && value.trim().length > 0);
-
-      const uniqueFindings = Array.from(new Set(findings));
-
-      // Require corroboration from at least two models to avoid single-model false positives.
-      if (uniqueFindings.length >= 2 || findings.length >= 2) {
-        merged[key] = findings.join(' | ');
-      } else {
-        merged[key] = null;
+    for (const { model, analysis } of modelAnalyses) {
+      for (const key of keys) {
+        const value = analysis[key];
+        if (value && typeof value === 'string' && value.trim().length > 0) {
+          aggregations[key].descriptions.add(value.trim());
+          aggregations[key].models.add(model);
+        }
       }
     }
 
-    return merged;
+    const merged: AIVisualAnalysis = {};
+
+    for (const key of keys) {
+      const descriptionParts = Array.from(aggregations[key].descriptions);
+      const modelsSupporting = Array.from(aggregations[key].models);
+
+      if (descriptionParts.length > 0) {
+        merged[key] = {
+          description: descriptionParts.join(' | '),
+          models: modelsSupporting
+        };
+      }
+    }
+
+    return Object.keys(merged).length > 0 ? merged : null;
   } catch (error) {
     console.error('AI analysis error:', error);
     return null;
