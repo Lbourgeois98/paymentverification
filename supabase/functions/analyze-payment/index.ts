@@ -200,7 +200,10 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
     // Final confidence adjustment
     confidence = Math.max(0, Math.min(100, confidence));
 
-    const authentic = confidence >= 70 && !editingDetected;
+    // Only mark as modified when there is clear evidence of editing
+    const hasCriticalFindings = findings.some(finding => finding.type === 'critical');
+    const authenticityThreshold = (hasCriticalFindings || editingDetected) ? 70 : 50;
+    const authentic = !editingDetected && !hasCriticalFindings && confidence >= authenticityThreshold;
 
     if (authentic && findings.length === 0) {
       findings.push({
