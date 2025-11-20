@@ -433,14 +433,16 @@ function detectEditingSoftware(data: Uint8Array): string[] {
 }
 
 function detectRecompression(data: Uint8Array): boolean {
-  // Look for multiple JFIF or JPEG markers
+  // Look for multiple JFIF or JPEG markers. Two markers can appear legitimately
+  // when a file embeds a thumbnail preview, so require at least three distinct
+  // start markers before flagging to reduce false positives on native captures.
   let jpegMarkerCount = 0;
   for (let i = 0; i < data.length - 1; i++) {
     if (data[i] === 0xFF && data[i + 1] === 0xD8) {
       jpegMarkerCount++;
     }
   }
-  return jpegMarkerCount > 1;
+  return jpegMarkerCount > 2;
 }
 
 function detectImageFormat(data: Uint8Array): string {
@@ -463,11 +465,23 @@ function analyzePNG(data: Uint8Array): { suspicious: boolean } {
 }
 
 function analyzeJPEG(data: Uint8Array): { qualityInconsistent: boolean } {
-  // Simplified quality analysis - in real implementation would analyze DCT coefficients
-  // Check for multiple quality settings in comments
-  const dataString = new TextDecoder().decode(data);
-  const qualityMentions = (dataString.match(/quality/gi) || []).length;
-  return { qualityInconsistent: qualityMentions > 2 };
+  // Extract metadata-like tokens from the header region to look for explicit
+  // quality tags instead of scanning arbitrary binary data, which can contain
+  // random "quality" strings and cause false positives.
+  const headerTokens = extractHeaderTokens(data, 16384);
+
+  // Capture numerical quality values such as "Quality=92" or "quality 85".
+  const qualityValues = headerTokens
+    .map((token) => {
+      const match = token.match(/\bquality[:=]?\s*(\d{1,3})/i);
+      return match ? parseInt(match[1], 10) : null;
+    })
+    .filter((value): value is number => value !== null);
+
+  // Flag only when multiple distinct quality levels are present, suggesting
+  // the image was saved more than once with different compression settings.
+  const distinctQualityValues = new Set(qualityValues);
+  return { qualityInconsistent: distinctQualityValues.size > 1 && qualityValues.length > 1 };
 }
 
 function detectAppSignatures(data: Uint8Array): string[] {
