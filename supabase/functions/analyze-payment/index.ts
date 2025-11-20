@@ -234,10 +234,29 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
     const hasCriticalFindings = findings.some(finding => finding.type === 'critical');
     const combinedSoftwareEvidence = evidenceSignals.has('editing-software') || evidenceSignals.has('app-signature');
     const combinedCompressionEvidence = evidenceSignals.has('recompression') || evidenceSignals.has('quality');
-    const multiSignalSuspicion = evidenceSignals.size >= 3 || (combinedSoftwareEvidence && combinedCompressionEvidence);
-    const editingLikely = hasCriticalFindings || editingDetected || multiSignalSuspicion;
-    const authenticityThreshold = editingLikely ? 70 : 45;
+
+    // Ignore metadata-missing as a standalone signal and require corroboration
+    // across independent categories before declaring modification.
+    const corroboratedSignals = new Set(
+      [...evidenceSignals].filter((signal) => signal !== 'metadata-missing')
+    );
+    const metadataSignals = ['editing-software', 'app-signature'];
+    const metadataEvidencePresent = metadataSignals.some((signal) => corroboratedSignals.has(signal));
+    const nonMetadataEvidenceCount = [...corroboratedSignals].filter(
+      (signal) => !metadataSignals.includes(signal)
+    ).length;
+
+    const corroboratedMetadata = metadataEvidencePresent && nonMetadataEvidenceCount > 0;
+    const multiSignalSuspicion =
+      corroboratedSignals.size >= 2 && (metadataEvidencePresent || nonMetadataEvidenceCount > 1);
+
+    const editingLikely = hasCriticalFindings || corroboratedMetadata || multiSignalSuspicion;
+    const authenticityThreshold = editingLikely ? 70 : 50;
     const authentic = !editingLikely && confidence >= authenticityThreshold;
+
+    // Align metadata flag with the final decision so warnings alone do not mark
+    // the image as edited.
+    editingDetected = editingLikely;
 
     if (authentic && findings.length === 0) {
       findings.push({
