@@ -4,16 +4,17 @@ import { UploadZone } from '@/components/UploadZone';
 import { ResultsDisplay } from '@/components/ResultsDisplay';
 import { AnalysisProgress } from '@/components/AnalysisProgress';
 import logo from '@/assets/logo.png';
+import type { AnalysisResult } from '@/types/analysis';
 
 const Index = () => {
-  const [analysisResult, setAnalysisResult] = useState<any>(null);
+  const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   const handleAnalysisStart = () => {
     setIsAnalyzing(true);
   };
 
-  const handleAnalysisComplete = (result: any) => {
+  const handleAnalysisComplete = (result: AnalysisResult) => {
     setIsAnalyzing(false);
     setAnalysisResult(result);
   };
@@ -68,7 +69,7 @@ const Index = () => {
                 <div className="p-6 rounded-lg cyber-border-purple bg-card/30 backdrop-blur">
                   <h3 className="text-xl font-bold text-secondary mb-2">AI Visual Analysis</h3>
                   <p className="text-sm text-muted-foreground">
-                    Powered by Gemini 2.5 to detect cloned regions, lighting inconsistencies, and pixel manipulation
+                    Powered by multiple AI vision models to detect cloned regions, lighting inconsistencies, and pixel manipulation
                   </p>
                 </div>
                 <div className="p-6 rounded-lg cyber-border bg-card/30 backdrop-blur">
@@ -98,7 +99,7 @@ const Index = () => {
         <footer className="border-t border-primary/30 bg-cyber-dark/80 backdrop-blur mt-20">
           <div className="container mx-auto px-4 py-8 text-center">
             <p className="text-sm text-muted-foreground">
-              Powered by advanced forensic technology and AI vision analysis (Gemini 2.5)
+              Powered by advanced forensic technology and multi-model AI vision analysis
             </p>
           </div>
         </footer>
