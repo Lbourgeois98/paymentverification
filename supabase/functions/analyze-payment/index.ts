@@ -84,14 +84,22 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
 
     // Analyze image header for editing software signatures
     const softwareSignatures = detectEditingSoftware(binaryData);
+    const appSignatures = detectAppSignatures(binaryData);
+    const strongMetadataEvidence = softwareSignatures.length + appSignatures.length > 1;
+
     if (softwareSignatures.length > 0) {
       editingSoftware = softwareSignatures.join(', ');
-      editingDetected = true;
+      const severity: 'warning' | 'critical' = strongMetadataEvidence ? 'critical' : 'warning';
       findings.push({
-        type: 'critical',
-        message: `Editing software detected: ${editingSoftware}. Image has been processed through editing applications.`
+        type: severity,
+        message: `Editing software detected in metadata: ${editingSoftware}.`
       });
-      confidence -= 40;
+      if (severity === 'critical') {
+        editingDetected = true;
+        confidence -= 30;
+      } else {
+        confidence -= 10;
+      }
     }
 
     // Check for multiple save signatures (re-compression)
@@ -129,14 +137,18 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
     }
 
     // Check for common editing app signatures in metadata
-    const appSignatures = detectAppSignatures(binaryData);
     if (appSignatures.length > 0) {
+      const severity: 'warning' | 'critical' = strongMetadataEvidence ? 'critical' : 'warning';
       findings.push({
-        type: 'critical',
-        message: `Detected traces of editing apps: ${appSignatures.join(', ')}. Image has been modified.`
+        type: severity,
+        message: `Detected traces of editing apps in metadata: ${appSignatures.join(', ')}.`
       });
-      editingDetected = true;
-      confidence -= 30;
+      if (severity === 'critical') {
+        editingDetected = true;
+        confidence -= 25;
+      } else {
+        confidence -= 8;
+      }
     }
 
     // PHASE 2: AI-Powered Visual Analysis
@@ -200,7 +212,10 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
     // Final confidence adjustment
     confidence = Math.max(0, Math.min(100, confidence));
 
-    const authentic = confidence >= 70 && !editingDetected;
+    // Only mark as modified when there is clear evidence of editing
+    const hasCriticalFindings = findings.some(finding => finding.type === 'critical');
+    const authenticityThreshold = (hasCriticalFindings || editingDetected) ? 70 : 50;
+    const authentic = !editingDetected && !hasCriticalFindings && confidence >= authenticityThreshold;
 
     if (authentic && findings.length === 0) {
       findings.push({
@@ -333,23 +348,81 @@ function checkExifPresence(data: Uint8Array): boolean {
   return false;
 }
 
+function extractMetadataStrings(data: Uint8Array, maxLength = 8192): string[] {
+  // Collect readable ASCII sequences from the header/metadata region only
+  const strings: string[] = [];
+  const limit = Math.min(data.length, maxLength);
+  let current: number[] = [];
+
+  for (let i = 0; i < limit; i++) {
+    const byte = data[i];
+    if (byte >= 32 && byte <= 126) {
+      current.push(byte);
+    } else {
+      if (current.length >= 4) {
+        strings.push(String.fromCharCode(...current).trim());
+      }
+      current = [];
+    }
+  }
+
+  if (current.length >= 4) {
+    strings.push(String.fromCharCode(...current).trim());
+  }
+
+  return strings;
+}
+
+function extractHeaderTokens(data: Uint8Array, maxLength = 8192): string[] {
+  return extractMetadataStrings(data, maxLength)
+    .map((segment) => segment.replace(/\s+/g, ' ').toLowerCase())
+    .filter((segment) => segment.length > 0);
+}
+
+function escapeRegExp(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function headerContainsPattern(tokens: string[], pattern: string): boolean {
+  const normalizedPattern = pattern.toLowerCase();
+  const boundaryRegex = new RegExp(`\\b${escapeRegExp(normalizedPattern)}\\b`, 'i');
+
+  // Check each token for a whole-word match
+  if (tokens.some((token) => boundaryRegex.test(token))) {
+    return true;
+  }
+
+  // Allow multi-word patterns to span adjacent tokens
+  if (normalizedPattern.includes(' ')) {
+    const joined = tokens.join(' ');
+    return boundaryRegex.test(joined);
+  }
+
+  return false;
+}
+
 function detectEditingSoftware(data: Uint8Array): string[] {
   const software: string[] = [];
-  const dataString = new TextDecoder().decode(data);
-  
+  const headerTokens = extractHeaderTokens(data);
+
+  // Only evaluate metadata-like tokens to avoid random binary matches
+  const metadataTokens = headerTokens.filter((token) =>
+    /(software|application|producer|creator|generator|rendered|modified)/i.test(token)
+  );
+
   const signatures = [
-    { name: 'Photoshop', patterns: ['Adobe Photoshop', 'photoshop', 'PHOSHOP'] },
-    { name: 'GIMP', patterns: ['GIMP', 'gimp'] },
-    { name: 'Canva', patterns: ['Canva', 'canva'] },
-    { name: 'Pixlr', patterns: ['Pixlr', 'pixlr'] },
-    { name: 'Paint.NET', patterns: ['Paint.NET', 'paint.net'] },
-    { name: 'Affinity', patterns: ['Affinity Photo', 'Affinity'] },
-    { name: 'Sketch', patterns: ['Sketch', 'sketch'] }
+    { name: 'Photoshop', patterns: ['adobe photoshop', 'photoshop', 'phoshop'] },
+    { name: 'GIMP', patterns: ['gimp'] },
+    { name: 'Canva', patterns: ['canva'] },
+    { name: 'Pixlr', patterns: ['pixlr'] },
+    { name: 'Paint.NET', patterns: ['paint.net'] },
+    { name: 'Affinity', patterns: ['affinity photo', 'affinity'] },
+    { name: 'Sketch', patterns: ['sketch'] }
   ];
 
   for (const sig of signatures) {
     for (const pattern of sig.patterns) {
-      if (dataString.includes(pattern)) {
+      if (headerContainsPattern(metadataTokens, pattern)) {
         software.push(sig.name);
         break;
       }
@@ -399,8 +472,11 @@ function analyzeJPEG(data: Uint8Array): { qualityInconsistent: boolean } {
 
 function detectAppSignatures(data: Uint8Array): string[] {
   const apps: string[] = [];
-  const dataString = new TextDecoder().decode(data);
-  
+  const headerTokens = extractHeaderTokens(data);
+  const metadataTokens = headerTokens.filter((token) =>
+    /(software|application|producer|creator|generator|rendered|modified|app)/i.test(token)
+  );
+
   const appSignatures = [
     { name: 'Snapseed', pattern: 'snapseed' },
     { name: 'Instagram', pattern: 'instagram' },
@@ -410,7 +486,7 @@ function detectAppSignatures(data: Uint8Array): string[] {
   ];
 
   for (const app of appSignatures) {
-    if (dataString.toLowerCase().includes(app.pattern)) {
+    if (headerContainsPattern(metadataTokens, app.pattern)) {
       apps.push(app.name);
     }
   }
