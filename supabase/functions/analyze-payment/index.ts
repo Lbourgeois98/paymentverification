@@ -254,9 +254,6 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
       }
     }
 
-    // Final confidence adjustment
-    confidence = Math.max(0, Math.min(100, confidence));
-
     // Evaluate evidence using categories and severities to require corroboration
     // across independent signals. Metadata-only warnings should not mark images
     // as modified without support from other categories.
@@ -283,6 +280,23 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
 
     const editingLikely = criticalSupported || corroboratedWarnings;
     const authenticityThreshold = editingLikely ? 70 : 50;
+
+    // Final confidence adjustment with guardrails to avoid false negatives when
+    // only warning-level evidence exists. Cap the total penalty applied from
+    // warnings so a clean screenshot with metadata quirks is not marked
+    // inauthentic unless corroborating signals exist.
+    confidence = Math.max(0, Math.min(100, confidence));
+    const warningOnly = !aiCriticalPresent && totalCriticalEvidence === 0;
+    if (!editingLikely && warningOnly) {
+      const maxWarningPenalty = 35;
+      const appliedPenalty = 100 - confidence;
+      if (appliedPenalty > maxWarningPenalty) {
+        confidence = 100 - maxWarningPenalty;
+      }
+    }
+
+    // Re-evaluate authenticity after capping warning penalties to ensure
+    // non-correlated warnings do not overpower the decision.
     const authentic = !editingLikely && confidence >= authenticityThreshold;
 
     // Align metadata flag with the final decision so warnings alone do not mark
