@@ -237,6 +237,8 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
     console.log('Starting AI-powered visual analysis...');
     const aiAnalysis = await performAIVisualAnalysis(base64Image);
 
+    let highConfidenceAICritical = false;
+
     if (aiAnalysis) {
       const baseSeverity: Record<AIFindingKey, 'warning' | 'critical'> = {
         clonedRegions: 'critical',
@@ -286,6 +288,13 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
         if (base === 'critical' && severity === 'critical') {
           editingDetected = true;
           addEvidence('ai', key, 'critical');
+
+          // Treat critical findings with support from multiple models as high
+          // confidence even if other categories are quiet, so clear visual
+          // tampering is not missed.
+          if (supportedModels >= 2) {
+            highConfidenceAICritical = true;
+          }
         } else {
           addEvidence('ai', key, 'warning');
         }
@@ -320,8 +329,17 @@ async function analyzeImage(base64Image: string): Promise<AnalysisResult> {
       riskScore >= 35 &&
       nonMetadataCategoriesWithEvidence >= 1;
 
+    const strongSingleCategoryCritical =
+      categoriesWithCritical === 1 &&
+      totalCriticalEvidence >= 2 &&
+      riskScore >= 40;
+
     const riskAdjustedCritical = criticalSupported && riskScore >= 30;
-    const editingLikely = riskAdjustedCritical || (warningCluster && riskScore >= 50);
+    const editingLikely =
+      riskAdjustedCritical ||
+      strongSingleCategoryCritical ||
+      (highConfidenceAICritical && riskScore >= 30) ||
+      (warningCluster && riskScore >= 50);
     const authenticityThreshold = editingLikely ? 72 : 60;
 
     // Final confidence adjustment with guardrails to avoid false negatives when
