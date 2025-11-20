@@ -5,10 +5,11 @@ import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 
 interface UploadZoneProps {
+  onAnalysisStart: () => void;
   onAnalysisComplete: (result: any) => void;
 }
 
-export const UploadZone = ({ onAnalysisComplete }: UploadZoneProps) => {
+export const UploadZone = ({ onAnalysisStart, onAnalysisComplete }: UploadZoneProps) => {
   const [isDragging, setIsDragging] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -52,6 +53,8 @@ export const UploadZone = ({ onAnalysisComplete }: UploadZoneProps) => {
     if (!selectedFile) return;
 
     setIsAnalyzing(true);
+    onAnalysisStart();
+    
     try {
       // Convert file to base64
       const reader = new FileReader();

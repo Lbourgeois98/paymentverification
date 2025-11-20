@@ -2,10 +2,21 @@ import { useState } from 'react';
 import { MatrixRain } from '@/components/MatrixRain';
 import { UploadZone } from '@/components/UploadZone';
 import { ResultsDisplay } from '@/components/ResultsDisplay';
+import { AnalysisProgress } from '@/components/AnalysisProgress';
 import logo from '@/assets/logo.png';
 
 const Index = () => {
   const [analysisResult, setAnalysisResult] = useState<any>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+
+  const handleAnalysisStart = () => {
+    setIsAnalyzing(true);
+  };
+
+  const handleAnalysisComplete = (result: any) => {
+    setIsAnalyzing(false);
+    setAnalysisResult(result);
+  };
 
   return (
     <div className="min-h-screen bg-cyber-darker relative overflow-hidden">
@@ -30,35 +41,40 @@ const Index = () => {
             <div className="space-y-8">
               <div className="text-center space-y-4 mb-12">
                 <h2 className="text-4xl md:text-5xl font-bold text-foreground">
-                  Detect Payment Screenshot
-                  <span className="block text-primary glow-text">Manipulation</span>
+                  AI-Powered Payment Screenshot
+                  <span className="block text-primary glow-text">Verification</span>
                 </h2>
                 <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-                  Advanced forensic analysis to verify the authenticity of payment screenshots
+                  Advanced forensic analysis combined with AI vision detection to verify the authenticity of payment screenshots
                   from Chime, CashApp, PayPal, Apple Pay, and Venmo.
                 </p>
               </div>
 
-              <UploadZone onAnalysisComplete={setAnalysisResult} />
+              <UploadZone 
+                onAnalysisStart={handleAnalysisStart}
+                onAnalysisComplete={handleAnalysisComplete} 
+              />
+
+              <AnalysisProgress isAnalyzing={isAnalyzing} />
 
               {/* Features */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-16">
                 <div className="p-6 rounded-lg cyber-border bg-card/30 backdrop-blur">
-                  <h3 className="text-xl font-bold text-primary mb-2">EXIF Analysis</h3>
+                  <h3 className="text-xl font-bold text-primary mb-2">Binary Forensics</h3>
                   <p className="text-sm text-muted-foreground">
-                    Examines metadata for editing software signatures and inconsistencies
+                    Examines EXIF metadata, compression signatures, and editing software traces
                   </p>
                 </div>
                 <div className="p-6 rounded-lg cyber-border-purple bg-card/30 backdrop-blur">
-                  <h3 className="text-xl font-bold text-secondary mb-2">Error Level Analysis</h3>
+                  <h3 className="text-xl font-bold text-secondary mb-2">AI Visual Analysis</h3>
                   <p className="text-sm text-muted-foreground">
-                    Detects compression artifacts that indicate image manipulation
+                    Powered by Gemini 2.5 to detect cloned regions, lighting inconsistencies, and pixel manipulation
                   </p>
                 </div>
                 <div className="p-6 rounded-lg cyber-border bg-card/30 backdrop-blur">
-                  <h3 className="text-xl font-bold text-primary mb-2">Clone Detection</h3>
+                  <h3 className="text-xl font-bold text-primary mb-2">Multi-Layer Detection</h3>
                   <p className="text-sm text-muted-foreground">
-                    Identifies copied or duplicated regions within the image
+                    Combines traditional forensics with advanced AI to catch sophisticated edits
                   </p>
                 </div>
               </div>
@@ -82,7 +98,7 @@ const Index = () => {
         <footer className="border-t border-primary/30 bg-cyber-dark/80 backdrop-blur mt-20">
           <div className="container mx-auto px-4 py-8 text-center">
             <p className="text-sm text-muted-foreground">
-              Powered by advanced image forensics technology
+              Powered by advanced forensic technology and AI vision analysis (Gemini 2.5)
             </p>
           </div>
         </footer>
